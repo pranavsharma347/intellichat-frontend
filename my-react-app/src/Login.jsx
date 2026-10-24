@@ -285,9 +285,9 @@ function Login() {
           </div>
         </div>
 
-        {/* FOUNDER SIDE (hidden on small screens), same style as the IntelliDocs page */}
+        {/* FOUNDER SIDE: next to the form on large screens, below the form on phones */}
         <div
-          className="col-lg-6 d-none d-lg-flex flex-column justify-content-center align-items-center p-5"
+          className="col-lg-6 d-flex flex-column justify-content-center align-items-center p-4 p-lg-5"
           style={{ backgroundColor: theme === "light" ? "#F4F4F4" : "#111111" }}
         >
           <div style={{ width: "100%", maxWidth: "460px" }}>
