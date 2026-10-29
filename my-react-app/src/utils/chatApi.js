@@ -90,6 +90,9 @@ export const renameConversation = (id, title) =>
 
 export const deleteConversation = (id) => json(`/conversations/${id}`, { method: "DELETE" });
 
+// Deletes the logged-in user's account together with all their chats and messages.
+export const deleteAccount = () => json("/users/me", { method: "DELETE" });
+
 /* ---------------- sending messages ---------------- */
 
 // First message of a new chat: creates the chat, its title and the answer in one call.

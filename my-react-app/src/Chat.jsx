@@ -13,12 +13,14 @@ import {
   FaStop,
   FaSun,
   FaTrashAlt,
+  FaUserTimes,
 } from "react-icons/fa";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useTheme } from "./ThemeContext";
 import {
   clearToken,
+  deleteAccount,
   deleteConversation,
   getConversations,
   getEmailFromToken,
@@ -55,6 +57,9 @@ const SUGGESTIONS = [
   "Compare RAG and fine-tuning in a table, with a short Python example.",
 
 ];
+
+// Page the user lands on after deleting their account. Change it if your login route is different.
+const LOGIN_PATH = "/login";
 
 const SIDE_MIN = 220;
 const SIDE_MAX = 480;
@@ -201,7 +206,7 @@ function ChatItem({ c, active, menuOpen, renaming, onOpen, onMenu, onCommit, onC
   };
 
   return (
-    <div className={`icc-row ${active ? "active" : ""} ${menuOpen ? "menu-open" : ""}`}>
+    <div className={`icc-row ${active ? "active" : ""} ${menuOpen ? "menu-open" : ""} ${c.pending ? "pending" : ""}`}>
       {renaming ? (
         <input
           className="icc-rename"
@@ -223,22 +228,25 @@ function ChatItem({ c, active, menuOpen, renaming, onOpen, onMenu, onCommit, onC
             type="button"
             className="icc-item"
             onClick={onOpen}
+            disabled={c.pending}
             aria-current={active ? "page" : undefined}
             title={c.title}
           >
             {c.title || "New chat"}
           </button>
-          <button
-            type="button"
-            className="icc-icon-btn icc-more"
-            data-menu-trigger
-            onClick={onMenu}
-            aria-label="Chat options"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-          >
-            <FaEllipsisH />
-          </button>
+          {!c.pending && (
+            <button
+              type="button"
+              className="icc-icon-btn icc-more"
+              data-menu-trigger
+              onClick={onMenu}
+              aria-label="Chat options"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+            >
+              <FaEllipsisH />
+            </button>
+          )}
         </>
       )}
     </div>
@@ -273,6 +281,9 @@ function ChatApp() {
   const [renamingId, setRenamingId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [accountModal, setAccountModal] = useState(false); // "Delete account" dialog
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [accountError, setAccountError] = useState("");
   const [sideWidth, setSideWidth] = useState(() => {
     try {
       const saved = Number(localStorage.getItem("icc-side-width"));
@@ -377,11 +388,15 @@ function ChatApp() {
   }, [menu, userMenuOpen]);
 
   useEffect(() => {
-    if (!deleteTarget) return undefined;
-    const onKey = (e) => e.key === "Escape" && setDeleteTarget(null);
+    if (!deleteTarget && !accountModal) return undefined;
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (!deleting) setDeleteTarget(null);
+      if (!deletingAccount) setAccountModal(false);
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [deleteTarget]);
+  }, [deleteTarget, accountModal, deleting, deletingAccount]);
 
   /* ----- the browser tab shows the title of the open chat ----- */
   const activeTitle = activeId
@@ -494,6 +509,26 @@ function ChatApp() {
     }
   };
 
+  const openDeleteAccount = () => {
+    setUserMenuOpen(false);
+    setAccountError("");
+    setAccountModal(true);
+  };
+
+  const confirmDeleteAccount = async () => {
+    setDeletingAccount(true);
+    setAccountError("");
+    try {
+      abortRef.current?.abort(); // stop any reply that is still being written
+      await deleteAccount();
+      clearToken();
+      navigate(LOGIN_PATH, { replace: true });
+    } catch (e) {
+      setAccountError(e.message || "Could not delete your account. Try again.");
+      setDeletingAccount(false);
+    }
+  };
+
   const logout = () => {
     abortRef.current?.abort();
     clearToken();
@@ -528,13 +563,20 @@ function ChatApp() {
       if (isNew) {
         // First message of a new chat: one call creates chat + title + answer.
         setMessages([userMsg, placeholder]);
+        // Show a "New chat" row in the sidebar straight away. It is swapped for the real
+        // chat (real id + generated title) when the answer arrives.
+        const tempId = `temp-${stamp}`;
+        setConversations((prev) => [
+          { id: tempId, title: "New chat", created_at: new Date().toISOString(), pending: true },
+          ...prev,
+        ]);
         const data = await newChat(content, controller.signal);
         const ms = performance.now() - t0;
         const newId = String(data.conversation_id);
-        setConversations((prev) => [
-          { id: data.conversation_id, title: data.title, created_at: new Date().toISOString() },
-          ...prev,
-        ]);
+        const created = { id: data.conversation_id, title: data.title, created_at: new Date().toISOString() };
+        setConversations((prev) =>
+          prev.some((c) => c.id === tempId) ? prev.map((c) => (c.id === tempId ? created : c)) : [created, ...prev]
+        );
         if (stillHere()) {
           justCreated.current = newId;
           setMessages([userMsg, { id: botId, role: "assistant", content: data.answer, ms }]);
@@ -589,7 +631,10 @@ function ChatApp() {
       } else if (stillHere()) {
         setError(e.message || "Something went wrong. Try again.");
         setInput((cur) => cur || content); // give the text back so nothing is lost
-        if (isNew) setMessages([]);
+        if (isNew) {
+          setMessages([]);
+          setConversations((prev) => prev.filter((c) => !c.pending));
+        }
       }
     } finally {
       abortRef.current = null;
@@ -667,7 +712,7 @@ function ChatApp() {
             <ChatItem
               key={c.id}
               c={c}
-              active={String(c.id) === activeId}
+              active={c.pending ? !activeId : String(c.id) === activeId}
               menuOpen={menu?.id === c.id}
               renaming={renamingId === c.id}
               onOpen={() => openConversation(c.id)}
@@ -691,6 +736,9 @@ function ChatApp() {
               <div className="icc-menu-sep" />
               <button type="button" role="menuitem" className="danger" onClick={logout}>
                 <FaSignOutAlt /> Log out
+              </button>
+              <button type="button" role="menuitem" className="danger" onClick={openDeleteAccount}>
+                <FaUserTimes /> Delete account
               </button>
             </div>
           )}
@@ -759,6 +807,36 @@ function ChatApp() {
               </button>
               <button type="button" className="danger" onClick={confirmDelete} disabled={deleting}>
                 {deleting ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {accountModal && (
+        <div className="icc-modal-wrap" onMouseDown={() => !deletingAccount && setAccountModal(false)}>
+          <div
+            className="icc-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Delete account"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h2>Delete your account?</h2>
+            <p>
+              {email} and all your chats and messages will be deleted for good. This can’t be undone.
+            </p>
+            {accountError && (
+              <p className="icc-error-text" role="alert">
+                {accountError}
+              </p>
+            )}
+            <div className="icc-modal-actions">
+              <button type="button" onClick={() => setAccountModal(false)} disabled={deletingAccount}>
+                Cancel
+              </button>
+              <button type="button" className="danger" onClick={confirmDeleteAccount} disabled={deletingAccount}>
+                {deletingAccount ? "Deleting…" : "Delete account"}
               </button>
             </div>
           </div>
@@ -946,6 +1024,7 @@ const CSS = `
 .icc-more{flex:none;margin-right:4px;width:30px;height:30px;opacity:0}
 .icc-row:hover .icc-more,.icc-row.active .icc-more,.icc-row.menu-open .icc-more,.icc-more:focus-visible{opacity:1}
 @media (hover:none){.icc-more{opacity:1}}
+.icc-row.pending .icc-item{color:var(--muted);font-style:italic;cursor:default}
 .icc-rename{flex:1;min-width:0;margin:3px 4px;padding:6px 8px;border:1px solid var(--accent);
   border-radius:8px;background:var(--bg)}
 
@@ -979,6 +1058,7 @@ const CSS = `
 .icc-modal{width:100%;max-width:380px;padding:20px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}
 .icc-modal h2{margin:0 0 8px;font-size:1.2rem}
 .icc-modal p{margin:0 0 18px;--c:var(--muted);overflow-wrap:break-word}
+.icc-modal .icc-error-text{--c:var(--danger);margin:0 0 14px}
 .icc-modal-actions{display:flex;justify-content:flex-end;gap:8px}
 .icc-modal-actions button{padding:9px 16px;border:1px solid var(--line);border-radius:10px;background:transparent;cursor:pointer}
 .icc-modal-actions button:disabled{opacity:.6;cursor:wait}
